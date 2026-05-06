@@ -1,209 +1,268 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { apiRequest } from '@/constants/api';
+import { login } from '@/constants/api';
+import { useTrackingLoop } from '@/hooks/use-tracking-loop';
+import {
+  clearToken,
+  getSavedToken,
+  MobileDevice,
+  PermissionStatus,
+  requestLocationPermission,
+  saveToken,
+  syncDevice,
+} from '@/services/mobile-device';
 
-type References = {
-  campuses: { id: number; name: string }[];
-  item_categories: { id: number; name: string }[];
-  incident_categories: { id: number; name: string }[];
-};
-
-export default function ReportsScreen() {
-  const [token, setToken] = useState('');
-  const [references, setReferences] = useState<References | null>(null);
+export default function TrackerScreen() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [token, setToken] = useState<string | null>(null);
+  const [device, setDevice] = useState<MobileDevice | null>(null);
+  const [permissionStatus, setPermissionStatus] = useState<PermissionStatus>('unknown');
   const [busy, setBusy] = useState(false);
+  const { status, message, poll, sendHeartbeatNow } = useTrackingLoop(token, device?.device_uuid ?? null, permissionStatus);
 
-  const loadReferences = async () => {
+  useEffect(() => {
+    getSavedToken().then(async (savedToken) => {
+      if (!savedToken) {
+        return;
+      }
+
+      setToken(savedToken);
+
+      try {
+        const synced = await syncDevice(savedToken, permissionStatus);
+        setDevice(synced);
+        setPermissionStatus(synced.location_permission_status);
+      } catch {
+        await clearToken();
+        setToken(null);
+      }
+    });
+  }, [permissionStatus]);
+
+  const handleLogin = async () => {
     setBusy(true);
     try {
-      setReferences(await apiRequest<References>('/references', token));
+      const response = await login(email, password);
+      await saveToken(response.token);
+      setToken(response.token);
+      const synced = await syncDevice(response.token, permissionStatus);
+      setDevice(synced);
+      Alert.alert('Signed in', 'Device synced to your student account.');
     } catch (error) {
-      Alert.alert('Request failed', error instanceof Error ? error.message : 'Unable to load data');
+      Alert.alert('Login failed', error instanceof Error ? error.message : 'Unable to sign in.');
     } finally {
       setBusy(false);
     }
   };
 
-  const submitLostItem = async () => {
-    if (!references) {
-      Alert.alert('References required', 'Load reference data first.');
+  const handleSync = async () => {
+    if (!token) {
+      Alert.alert('Login required', 'Sign in before syncing the device.');
       return;
     }
 
     setBusy(true);
     try {
-      await apiRequest('/lost-items', token, {
-        method: 'POST',
-        body: JSON.stringify({
-          item_category_id: references.item_categories[0]?.id,
-          campus_id: references.campuses[0]?.id,
-          name: 'Mobile phone',
-          description: 'Black phone reported from the mobile app.',
-          color: 'black',
-          brand_model: 'Generic phone',
-          lost_date: new Date().toISOString().slice(0, 10),
-          latitude: -6.7924,
-          longitude: 39.2083,
-        }),
-      });
-      Alert.alert('Submitted', 'Lost item report was sent.');
+      const synced = await syncDevice(token, permissionStatus);
+      setDevice(synced);
+      Alert.alert('Device synced', 'This phone is linked to your account.');
     } catch (error) {
-      Alert.alert('Request failed', error instanceof Error ? error.message : 'Unable to submit report');
+      Alert.alert('Sync failed', error instanceof Error ? error.message : 'Unable to sync device.');
     } finally {
       setBusy(false);
     }
   };
 
-  const submitIncident = async () => {
-    if (!references) {
-      Alert.alert('References required', 'Load reference data first.');
+  const handlePermission = async () => {
+    if (!token || !device) {
+      Alert.alert('Device sync required', 'Sync your device before requesting permission.');
       return;
     }
 
-    setBusy(true);
     try {
-      await apiRequest('/incidents', token, {
-        method: 'POST',
-        body: JSON.stringify({
-          incident_category_id: references.incident_categories[0]?.id,
-          campus_id: references.campuses[0]?.id,
-          description: 'Suspicious activity reported from the mobile app.',
-          severity: 'medium',
-          latitude: -6.7924,
-          longitude: 39.2083,
-        }),
-      });
-      Alert.alert('Submitted', 'Incident report was sent.');
+      const nextStatus = await requestLocationPermission(token, device.device_uuid);
+      setPermissionStatus(nextStatus);
+      Alert.alert('Permission updated', `Location permission is ${nextStatus}.`);
     } catch (error) {
-      Alert.alert('Request failed', error instanceof Error ? error.message : 'Unable to submit incident');
-    } finally {
-      setBusy(false);
+      Alert.alert('Permission failed', error instanceof Error ? error.message : 'Unable to update permission.');
     }
+  };
+
+  const handleLogout = async () => {
+    await clearToken();
+    setToken(null);
+    setDevice(null);
+    setPermissionStatus('unknown');
   };
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.eyebrow}>Digital Tracking</Text>
-      <Text style={styles.title}>Report lost items and campus incidents</Text>
+      <Text style={styles.eyebrow}>University Tracker</Text>
+      <Text style={styles.title}>Hybrid GPS tracking</Text>
       <Text style={styles.copy}>
-        Paste a bearer token from the Laravel API, load reference data, then submit a sample report.
-        The backend validates required fields, ownership, coordinates, and role restrictions.
+        Sign in, sync this device, grant location permission, then the app will poll the backend and switch between heartbeat and live tracking.
       </Text>
 
+      {!token ? (
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Student Login</Text>
+          <TextInput autoCapitalize="none" keyboardType="email-address" onChangeText={setEmail} placeholder="Email" style={styles.input} value={email} />
+          <TextInput onChangeText={setPassword} placeholder="Password" secureTextEntry style={styles.input} value={password} />
+          <Pressable disabled={busy} onPress={handleLogin} style={styles.button}>
+            <Text style={styles.buttonText}>{busy ? 'Signing in...' : 'Login and Sync Device'}</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Device Link</Text>
+          <Text style={styles.statusLine}>Token stored securely.</Text>
+          <Text style={styles.statusLine}>Device UUID: {device?.device_uuid ?? 'Not synced yet'}</Text>
+          <View style={styles.row}>
+            <Pressable disabled={busy} onPress={handleSync} style={[styles.secondaryButton, styles.flex]}>
+              <Text style={styles.secondaryText}>Sync Device</Text>
+            </Pressable>
+            <Pressable onPress={handleLogout} style={[styles.dangerButton, styles.flex]}>
+              <Text style={styles.buttonText}>Logout</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
       <View style={styles.card}>
-        <Text style={styles.label}>API token</Text>
-        <TextInput
-          autoCapitalize="none"
-          onChangeText={setToken}
-          placeholder="Bearer token"
-          secureTextEntry
-          style={styles.input}
-          value={token}
-        />
-        <Pressable disabled={!token || busy} onPress={loadReferences} style={styles.button}>
-          <Text style={styles.buttonText}>{busy ? 'Working...' : 'Load references'}</Text>
+        <Text style={styles.sectionTitle}>Location Permission</Text>
+        <Text style={styles.copySmall}>
+          Location is used to save last known campus location in heartbeat mode and to stream live GPS only when Active Search Mode is enabled.
+        </Text>
+        <Text style={styles.pill}>Permission: {permissionStatus}</Text>
+        <Pressable disabled={!token || !device} onPress={handlePermission} style={styles.secondaryButton}>
+          <Text style={styles.secondaryText}>Request / Update Permission</Text>
         </Pressable>
       </View>
 
-      <View style={styles.grid}>
-        <Pressable disabled={!references || busy} onPress={submitLostItem} style={styles.action}>
-          <Text style={styles.actionTitle}>Lost item</Text>
-          <Text style={styles.actionCopy}>Submit item details with map coordinates.</Text>
-        </Pressable>
-        <Pressable disabled={!references || busy} onPress={submitIncident} style={styles.action}>
-          <Text style={styles.actionTitle}>Incident</Text>
-          <Text style={styles.actionCopy}>Submit severity, location, and description.</Text>
-        </Pressable>
+      <View style={[styles.card, message.kind === 'live' && styles.liveCard]}>
+        <Text style={styles.sectionTitle}>Tracking Status</Text>
+        <Text style={styles.statusLine}>Mode: {status?.tracking_mode ?? 'unknown'}</Text>
+        <Text style={styles.statusLine}>Tracking: {status?.tracking_enabled ? 'enabled' : 'disabled'}</Text>
+        <Text style={styles.statusLine}>Lost: {status?.is_lost ? 'yes' : 'no'}</Text>
+        <Text style={styles.statusLine}>{message.text}</Text>
+        <View style={styles.row}>
+          <Pressable disabled={!token || !device} onPress={poll} style={[styles.secondaryButton, styles.flex]}>
+            <Text style={styles.secondaryText}>Poll Now</Text>
+          </Pressable>
+          <Pressable disabled={!token || !device || permissionStatus === 'denied'} onPress={sendHeartbeatNow} style={[styles.button, styles.flex]}>
+            <Text style={styles.buttonText}>Send Heartbeat</Text>
+          </Pressable>
+        </View>
       </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  action: {
-    backgroundColor: '#f8f3e8',
-    borderColor: '#decfae',
-    borderRadius: 24,
-    borderWidth: 1,
-    flex: 1,
-    minWidth: 150,
-    padding: 18,
-  },
-  actionCopy: {
-    color: '#655b4b',
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  actionTitle: {
-    color: '#251f17',
-    fontSize: 20,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
   button: {
     alignItems: 'center',
-    backgroundColor: '#2d5f53',
-    borderRadius: 18,
+    backgroundColor: '#1f6f5b',
+    borderRadius: 16,
     padding: 14,
   },
   buttonText: {
-    color: '#fff8e9',
-    fontSize: 16,
+    color: '#fff',
+    fontSize: 15,
     fontWeight: '800',
   },
   card: {
-    backgroundColor: '#fff8e9',
-    borderColor: '#e1d2ad',
-    borderRadius: 28,
+    backgroundColor: '#ffffff',
+    borderColor: '#d5dde5',
+    borderRadius: 22,
     borderWidth: 1,
     gap: 12,
     padding: 18,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 18,
   },
   container: {
-    backgroundColor: '#f0e4c9',
-    gap: 22,
+    backgroundColor: '#edf2f4',
+    gap: 18,
     minHeight: '100%',
-    padding: 24,
-    paddingTop: 72,
+    padding: 22,
+    paddingTop: 64,
   },
   copy: {
-    color: '#4b463b',
+    color: '#40515d',
     fontSize: 16,
     lineHeight: 24,
   },
+  copySmall: {
+    color: '#40515d',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  dangerButton: {
+    alignItems: 'center',
+    backgroundColor: '#a43f3f',
+    borderRadius: 16,
+    padding: 14,
+  },
   eyebrow: {
-    color: '#8d4b2d',
-    fontSize: 13,
+    color: '#1f6f5b',
+    fontSize: 12,
     fontWeight: '900',
     letterSpacing: 2,
     textTransform: 'uppercase',
   },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 14,
+  flex: {
+    flex: 1,
   },
   input: {
-    backgroundColor: '#fff',
-    borderColor: '#d6c59d',
-    borderRadius: 16,
+    backgroundColor: '#f8fafc',
+    borderColor: '#ccd6dd',
+    borderRadius: 14,
     borderWidth: 1,
-    color: '#251f17',
     padding: 14,
   },
-  label: {
-    color: '#4b463b',
+  liveCard: {
+    borderColor: '#d64545',
+  },
+  pill: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#e7f5ef',
+    borderRadius: 999,
+    color: '#1f6f5b',
+    fontWeight: '800',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  row: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  secondaryButton: {
+    alignItems: 'center',
+    borderColor: '#1f6f5b',
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
+  },
+  secondaryText: {
+    color: '#1f6f5b',
+    fontSize: 15,
     fontWeight: '800',
   },
+  sectionTitle: {
+    color: '#17242c',
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  statusLine: {
+    color: '#2d3d46',
+    fontSize: 15,
+    lineHeight: 22,
+  },
   title: {
-    color: '#251f17',
-    fontSize: 40,
+    color: '#17242c',
+    fontSize: 38,
     fontWeight: '900',
     letterSpacing: -1,
-    lineHeight: 44,
+    lineHeight: 42,
   },
 });

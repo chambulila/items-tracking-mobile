@@ -1,5 +1,11 @@
 export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8000/api';
 
+export type ApiUser = {
+  id: number;
+  name: string;
+  email: string;
+};
+
 export async function apiRequest<T>(
   path: string,
   token: string,
@@ -25,4 +31,11 @@ export async function apiRequest<T>(
   }
 
   return payload as T;
+}
+
+export async function login(email: string, password: string): Promise<{ token: string; user: ApiUser }> {
+  return apiRequest('/login', '', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
 }
