@@ -186,10 +186,29 @@ export async function submitLocationPayload(
   });
 }
 
-export async function sendCurrentLocation(token: string, deviceUuid: string, trackingMode: 'heartbeat' | 'live') {
-  const position = await Location.getCurrentPositionAsync({
-    accuracy: trackingMode === 'live' ? Location.Accuracy.High : Location.Accuracy.Balanced,
+function getFreshWebPosition(trackingMode: 'heartbeat' | 'live') {
+  return new Promise<GeolocationPosition>((resolve, reject) => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      reject(new Error('Browser geolocation is not available.'));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: trackingMode === 'live',
+      maximumAge: 0,
+      timeout: trackingMode === 'live' ? 10000 : 20000,
+    });
   });
+}
+
+export async function sendCurrentLocation(token: string, deviceUuid: string, trackingMode: 'heartbeat' | 'live') {
+  const position = Platform.OS === 'web'
+    ? await getFreshWebPosition(trackingMode)
+    : await Location.getCurrentPositionAsync({
+      accuracy: trackingMode === 'live' ? Location.Accuracy.Highest : Location.Accuracy.Balanced,
+      distanceInterval: trackingMode === 'live' ? 0 : undefined,
+      timeInterval: trackingMode === 'live' ? 1000 : undefined,
+    });
   const battery = await Battery.getBatteryLevelAsync().catch(() => null);
 
   return submitLocationPayload(token, deviceUuid, {
@@ -198,7 +217,7 @@ export async function sendCurrentLocation(token: string, deviceUuid: string, tra
     accuracy: position.coords.accuracy,
     speed: position.coords.speed,
     battery_level: battery !== null ? Math.round(battery * 100) : null,
-    recorded_at: new Date(position.timestamp).toISOString(),
+    recorded_at: new Date().toISOString(),
     tracking_mode: trackingMode,
   });
 }
