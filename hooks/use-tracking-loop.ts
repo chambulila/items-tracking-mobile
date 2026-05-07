@@ -39,6 +39,12 @@ export function useTrackingLoop(token: string | null, deviceUuid: string | null,
     const live = currentStatus.tracking_enabled && currentStatus.is_lost && currentStatus.tracking_mode === 'live';
 
     try {
+      if (!currentStatus.tracking_enabled) {
+        await stopActiveSearchBackgroundTracking();
+        setMessage({ kind: 'idle', text: 'Tracking is disabled by the backend. Polling status only.' });
+        return;
+      }
+
       if (live && now - lastLiveAt.current >= 10000) {
         await startActiveSearchBackgroundTracking(currentStatus.polling_interval_seconds);
         await sendCurrentLocation(token, deviceUuid, 'live');
@@ -71,9 +77,12 @@ export function useTrackingLoop(token: string | null, deviceUuid: string | null,
       setStatus(nextStatus);
       setPollingSeconds(Math.max(nextStatus.polling_interval_seconds, 10));
       const live = nextStatus.tracking_enabled && nextStatus.is_lost && nextStatus.tracking_mode === 'live';
+      const disabled = !nextStatus.tracking_enabled;
       setMessage({
-        kind: live ? 'live' : 'heartbeat',
-        text: live ? 'Active Search Mode is enabled. Sending live updates.' : 'Heartbeat mode. Sending low-frequency last known location.',
+        kind: disabled ? 'idle' : live ? 'live' : 'heartbeat',
+        text: disabled
+          ? 'Tracking is disabled by the backend. Polling status only.'
+          : live ? 'Active Search Mode is enabled. Sending live updates.' : 'Heartbeat mode. Sending low-frequency last known location.',
       });
 
       if (live) {
@@ -106,7 +115,7 @@ export function useTrackingLoop(token: string | null, deviceUuid: string | null,
   }, [deviceUuid, permissionStatus, sendTrackingTick, token]);
 
   const sendHeartbeatNow = useCallback(async () => {
-    if (!token || !deviceUuid || permissionStatus === 'denied') {
+    if (!token || !deviceUuid || permissionStatus === 'denied' || statusRef.current?.tracking_enabled === false) {
       return;
     }
 

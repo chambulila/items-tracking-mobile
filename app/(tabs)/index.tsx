@@ -151,7 +151,7 @@ export default function TrackerScreen() {
           <Pressable disabled={!token || !device} onPress={poll} style={[styles.secondaryButton, styles.flex]}>
             <Text style={styles.secondaryText}>Poll Now</Text>
           </Pressable>
-          <Pressable disabled={!token || !device || permissionStatus === 'denied'} onPress={sendHeartbeatNow} style={[styles.button, styles.flex]}>
+          <Pressable disabled={!token || !device || permissionStatus === 'denied' || status?.tracking_enabled === false} onPress={sendHeartbeatNow} style={[styles.button, styles.flex]}>
             <Text style={styles.buttonText}>Send Heartbeat</Text>
           </Pressable>
         </View>
